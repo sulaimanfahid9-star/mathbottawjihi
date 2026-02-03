@@ -2,6 +2,7 @@
 """
 Tawjihi Math Bot - Automated Telegram Math Teacher
 Posts one math question per day with step-by-step Arabic solutions using Gemini AI
+Uses the new google-genai SDK (replaces deprecated google.generativeai)
 """
 
 import json
@@ -11,9 +12,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 import requests
-import google.generativeai as genai
-import warnings
-warnings.filterwarnings('ignore', category=DeprecationWarning)
+from google import genai
 
 # Configure logging
 logging.basicConfig(
@@ -33,9 +32,8 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 DATABASE_PATH = 'data/questions.json'
 TELEGRAM_API_URL = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}'
 
-# Initialize Gemini AI
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
+# Initialize Gemini AI with new SDK
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def load_database():
@@ -94,7 +92,10 @@ def generate_solution(question_text, topic):
 ابدأ الآن:"""
 
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         logger.error(f"Failed to generate solution: {e}")
@@ -118,7 +119,10 @@ def generate_daily_tip(topic):
 ابدأ الآن:"""
 
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         logger.error(f"Failed to generate tip: {e}")
@@ -194,7 +198,10 @@ def generate_question_variant(original_question):
 ابدأ الآن:"""
 
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt
+        )
         return response.text.strip()
     except Exception as e:
         logger.error(f"Failed to generate variant: {e}")
