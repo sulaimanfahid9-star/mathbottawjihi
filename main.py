@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 import requests
 import google.generativeai as genai
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 # Configure logging
 logging.basicConfig(
@@ -33,7 +35,7 @@ TELEGRAM_API_URL = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}'
 
 # Initialize Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 
 def load_database():
