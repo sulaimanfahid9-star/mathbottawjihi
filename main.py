@@ -1,18 +1,15 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 """
-Tawjihi Math Bot - Automated Telegram Math Teacher
-Posts one math question per day with step-by-step Arabic solutions using Gemini AI
-Uses the new google-genai SDK
+Tawjihi Math Bot - Posts daily math questions with AI-generated solutions
+Uses Long Cat API for solution generation
 """
 
-import json
 import os
-import sys
+import json
 import logging
+import requests
 from datetime import datetime
 from pathlib import Path
-import requests
-from google import genai
 
 # Configure logging
 logging.basicConfig(
@@ -23,296 +20,243 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-logger = logging.getLogger(__name__)
 
-# Configuration
+# Environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-DATABASE_PATH = 'data/questions.json'
-TELEGRAM_API_URL = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}'
+LONGCAT_API_KEY = os.getenv('LONGCAT_API_KEY')
 
-# Initialize Gemini AI with new SDK
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Long Cat API configuration
+LONGCAT_BASE_URL = "https://api.longcat.chat/openai"
+LONGCAT_MODEL = "LongCat-Flash-Chat"
 
+# Ensure directories exist
+Path('logs').mkdir(exist_ok=True)
+Path('data').mkdir(exist_ok=True)
 
-def load_database():
-    """Load the questions database from JSON file"""
+def load_questions():
+    """Load questions from JSON database"""
     try:
-        with open(DATABASE_PATH, 'r', encoding='utf-8') as f:
+        with open('data/questions.json', 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
-        logger.error(f"Database file not found: {DATABASE_PATH}")
-        sys.exit(1)
-    except json.JSONDecodeError:
-        logger.error(f"Invalid JSON in database file: {DATABASE_PATH}")
-        sys.exit(1)
+        logging.error("Questions database not found!")
+        return []
 
-
-def save_database(data):
-    """Save the updated database back to JSON file"""
+def load_used_questions():
+    """Load the set of used question IDs"""
     try:
-        with open(DATABASE_PATH, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.info("Database saved successfully")
-    except Exception as e:
-        logger.error(f"Failed to save database: {e}")
-        raise
+        with open('data/used_questions.json', 'r', encoding='utf-8') as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
 
+def save_used_questions(used_ids):
+    """Save used question IDs"""
+    with open('data/used_questions.json', 'w', encoding='utf-8') as f:
+        json.dump(list(used_ids), f)
 
-def get_unused_question(questions):
-    """Get the first unused question from the database"""
-    for question in questions:
-        if not question.get('used', False):
-            return question
-    return None
+def get_next_question(questions, used_ids):
+    """Get the next unused question"""
+    for q in questions:
+        if q['id'] not in used_ids:
+            return q
+    # If all used, reset
+    return questions[0] if questions else None
 
-
-def generate_solution(question_text, topic):
-    """Generate Arabic solution using Gemini AI with emoji format"""
-    prompt = f"""انت معلم رياضيات يشرح بطريقة بسيطة وسهلة للطلاب.
-
-حل هذه المسألة بالصيغة المطلوبة بالضبط:
-
-المسألة:
-{question_text}
-
-متطلبات الحل:
-1. استخدم الصيغة المطلوبة بالضبط (انظر المثال)
-2. اكتب بالعربية فقط
-3. استخدم الارقام المرقمة: 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣
-4. اجعل الحل 3-5 خطوات فقط
-5. كل خطوة واضحة ومختصرة
-6. الاجابة النهائية مع ✅
-
-الصيغة المطلوبة بالضبط:
-
-📝 الحل:
-1️⃣ المعادلة الاصلية:
-[المعادلة الاصلية]
-2️⃣ الخطوة الاولى: [اسم الخطوة]
-[شرح الخطوة]
-3️⃣ الخطوة الثانية: [اسم الخطوة]
-[شرح الخطوة]
-4️⃣ الخطوة الثالثة: [اسم الخطوة]
-[شرح الخطوة]
-
-✅ النتيجة النهائية:
-[الاجابة النهائية بوضوح]
-
-مثال:
-📝 الحل:
-1️⃣ المعادلة الاصلية:
-3x + 7 = 19
-2️⃣ الخطوة الاولى: ازالة العدد 7
-نطرح 7 من الطرفين:
-3x = 12
-3️⃣ الخطوة الثانية: ايجاد قيمة x
-نقسم على 3:
-x = 4
-
-✅ النتيجة النهائية:
-x = 4
-
-ابدا الآن:"""
-
+def generate_solution(question_text):
+    """Generate solution using Long Cat API"""
     try:
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=prompt
+        headers = {
+            "Authorization": f"Bearer {LONGCAT_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        prompt = f"""You are a professional math teacher. Generate a clear, concise solution for this math question.
+
+Question: {question_text}
+
+Requirements:
+1. Use simple, clear Arabic language
+2. Show 3-5 key steps only
+3. Use numbered steps (1️⃣ 2️⃣ 3️⃣ etc.)
+4. No LaTeX or complex symbols
+5. End with the final answer
+6. Keep it SHORT and student-friendly
+
+Format:
+1️⃣ Step name: explanation
+2️⃣ Step name: explanation
+3️⃣ Step name: explanation
+✅ Final Answer: [answer]"""
+
+        data = {
+            "model": LONGCAT_MODEL,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 800,
+            "temperature": 0.7
+        }
+        
+        response = requests.post(
+            f"{LONGCAT_BASE_URL}/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=60
         )
-        return response.text
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        else:
+            logging.error(f"Long Cat API error: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
-        logger.error(f"Failed to generate solution: {e}")
+        logging.error(f"Failed to generate solution: {e}")
         return None
 
-
-def generate_daily_tip(topic):
-    """Generate a short daily math tip in Arabic"""
-    prompt = f"""انت معلم رياضيات محترف. قم بكتابة نصيحة تعليمية قصيرة جداً عن موضوع: {topic}
-
-المتطلبات:
-- النصيحة بالعربية فقط
-- سطر واحد فقط
-- نصيحة عملية وقيمة
-- ابدا بـ "💡 نصيحة اليوم:"
-
-مثال:
-💡 نصيحة اليوم:
-عند حل المعادلات، احرص دائماً على تنفيذ نفس العملية على طرفي المعادلة.
-
-ابدا الآن:"""
-
+def generate_daily_tip():
+    """Generate a daily educational tip using Long Cat API"""
     try:
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=prompt
-        )
-        return response.text
-    except Exception as e:
-        logger.error(f"Failed to generate tip: {e}")
-        return None
+        headers = {
+            "Authorization": f"Bearer {LONGCAT_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        prompt = """Generate one short, practical math study tip in Arabic for students.
+Keep it to 1-2 sentences max.
+Make it motivating and useful.
+Format: 💡 نصيحة اليوم: [tip]"""
 
+        data = {
+            "model": LONGCAT_MODEL,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 200,
+            "temperature": 0.8
+        }
+        
+        response = requests.post(
+            f"{LONGCAT_BASE_URL}/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        else:
+            logging.warning(f"Failed to generate tip: {response.status_code}")
+            return "💡 نصيحة اليوم: تذكر أن الممارسة المنتظمة هي مفتاح النجاح في الرياضيات"
+    except Exception as e:
+        logging.warning(f"Failed to generate tip: {e}")
+        return "💡 نصيحة اليوم: تذكر أن الممارسة المنتظمة هي مفتاح النجاح في الرياضيات"
 
 def format_telegram_post(question, solution, tip):
-    """Format the post for Telegram with new emoji format"""
-    post = f"""📘 السؤال:
+    """Format the post for Telegram"""
+    post = f"""📘 Question:
 {question['question']}
 
+Type: {question['type']}
+Chapter: {question['chapter']}
+
+📝 Solution:
 {solution}
 
 {tip}
 
 ---
-*الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}*
-*رقم السؤال: {question['id']}*
-"""
+Posted at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC
+Question ID: {question['id']}"""
+    
     return post
 
-
-def send_to_telegram(message_text):
-    """Send message to Telegram channel"""
+def send_to_telegram(message):
+    """Send message to Telegram"""
     try:
-        payload = {
-            'chat_id': TELEGRAM_CHAT_ID,
-            'text': message_text,
-            'parse_mode': 'Markdown'
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
         }
-        response = requests.post(
-            f'{TELEGRAM_API_URL}/sendMessage',
-            json=payload,
-            timeout=10
-        )
+        
+        response = requests.post(url, json=data, timeout=30)
         
         if response.status_code == 200:
-            logger.info(f"Message sent successfully to Telegram")
+            logging.info("Message sent successfully to Telegram")
             return True
         else:
-            logger.error(f"Failed to send message: {response.text}")
+            logging.error(f"Telegram error: {response.status_code} - {response.text}")
             return False
     except Exception as e:
-        logger.error(f"Telegram API error: {e}")
+        logging.error(f"Failed to send to Telegram: {e}")
         return False
 
-
-def generate_question_variant(original_question):
-    """Generate a new variant of a question when database is exhausted"""
-    prompt = f"""انت معلم رياضيات محترف. قم بإنشاء متغير جديد من المسألة التالية:
-
-المسألة الاصلية:
-{original_question['question']}
-
-المتطلبات:
-1. احتفظ بنفس المفهوم الرياضي
-2. غير الارقام والمتغيرات
-3. اكتب المسألة بالإنجليزية فقط
-4. اجعل المسألة بنفس مستوى الصعوبة
-5. اكتب فقط المسألة الجديدة بدون شرح
-
-ابدا الآن:"""
-
-    try:
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=prompt
-        )
-        return response.text.strip()
-    except Exception as e:
-        logger.error(f"Failed to generate variant: {e}")
-        return None
-
-
 def main():
-    """Main bot execution function"""
-    logger.info("=" * 60)
-    logger.info("Tawjihi Math Bot - Starting Daily Post")
-    logger.info("=" * 60)
+    """Main function"""
+    logging.info("=" * 60)
+    logging.info("Tawjihi Math Bot - Starting Daily Post")
+    logging.info("=" * 60)
     
-    # Validate configuration
-    if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GEMINI_API_KEY]):
-        logger.error("Missing required environment variables")
-        logger.error("Required: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GEMINI_API_KEY")
-        sys.exit(1)
+    # Validate environment variables
+    if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, LONGCAT_API_KEY]):
+        logging.error("Missing required environment variables!")
+        return
     
-    # Load database
-    logger.info("Loading question database...")
-    questions = load_database()
-    logger.info(f"Loaded {len(questions)} questions from database")
+    # Load questions
+    logging.info("Loading question database...")
+    questions = load_questions()
+    if not questions:
+        logging.error("No questions found!")
+        return
+    logging.info(f"Loaded {len(questions)} questions from database")
     
-    # Get unused question
-    logger.info("Searching for unused question...")
-    question = get_unused_question(questions)
+    # Get used questions
+    used_ids = load_used_questions()
     
+    # Select next question
+    logging.info("Searching for unused question...")
+    question = get_next_question(questions, used_ids)
     if not question:
-        logger.warning("All questions have been used. Generating new variants...")
-        # Find a random used question and create a variant
-        used_questions = [q for q in questions if q.get('used', False)]
-        if used_questions:
-            import random
-            original = random.choice(used_questions)
-            logger.info(f"Creating variant of question {original['id']}")
-            
-            new_question_text = generate_question_variant(original)
-            if new_question_text:
-                # Create new question object
-                new_id = max([q['id'] for q in questions]) + 1
-                question = {
-                    'id': new_id,
-                    'question': new_question_text,
-                    'type': original.get('type', 'algebra'),
-                    'chapter': original.get('chapter', 'Unknown'),
-                    'source': f"{original.get('source', 'Unknown')} - Variant",
-                    'used': False
-                }
-                questions.append(question)
-                logger.info(f"Generated variant question {new_id}")
-            else:
-                logger.error("Failed to generate question variant")
-                sys.exit(1)
-        else:
-            logger.error("No questions available in database")
-            sys.exit(1)
+        logging.error("No questions available!")
+        return
     
-    logger.info(f"Selected question {question['id']}: {question['question'][:50]}...")
+    logging.info(f"Selected question {question['id']}: {question['question'][:50]}...")
     
     # Generate solution
-    logger.info("Generating solution with Gemini AI...")
-    solution = generate_solution(question['question'], question.get('type', 'algebra'))
+    logging.info("Generating solution with Long Cat AI...")
+    solution = generate_solution(question['question'])
     if not solution:
-        logger.error("Failed to generate solution")
-        sys.exit(1)
-    logger.info("Solution generated successfully")
+        logging.error("Failed to generate solution")
+        return
+    logging.info("Solution generated successfully")
     
     # Generate daily tip
-    logger.info("Generating daily tip...")
-    tip = generate_daily_tip(question.get('chapter', 'Mathematics'))
-    if not tip:
-        logger.warning("Failed to generate tip, continuing without it")
-        tip = "💡 نصيحة اليوم:\nاستمر في الممارسة والتركيز على فهم المفاهيم الاساسية."
-    logger.info("Daily tip generated")
+    logging.info("Generating daily tip...")
+    tip = generate_daily_tip()
+    logging.info("Daily tip generated")
     
-    # Format and send to Telegram
-    logger.info("Formatting Telegram post...")
-    telegram_post = format_telegram_post(question, solution, tip)
+    # Format post
+    logging.info("Formatting Telegram post...")
+    post = format_telegram_post(question, solution, tip)
     
-    logger.info("Sending to Telegram...")
-    if send_to_telegram(telegram_post):
+    # Send to Telegram
+    logging.info("Sending to Telegram...")
+    if send_to_telegram(post):
         # Mark question as used
-        for q in questions:
-            if q['id'] == question['id']:
-                q['used'] = True
-                break
+        used_ids.add(question['id'])
+        save_used_questions(used_ids)
+        logging.info(f"Question {question['id']} marked as used")
         
-        # Save updated database
-        save_database(questions)
-        logger.info(f"Question {question['id']} marked as used")
-        logger.info("=" * 60)
-        logger.info("Daily post completed successfully!")
-        logger.info("=" * 60)
+        logging.info("=" * 60)
+        logging.info("Daily post completed successfully!")
+        logging.info("=" * 60)
     else:
-        logger.error("Failed to send message to Telegram")
-        sys.exit(1)
+        logging.error("Failed to send message to Telegram")
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
